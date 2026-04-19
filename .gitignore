@@ -1,0 +1,25 @@
+# Virtual environment
+.venv/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+
+# Project generated outputs
+*.db
+out/*
+!out/.gitkeep
+.api.pid
+
+# Data (large files, downloaded on demand)
+data/raw/bakery_sales.csv
+data/raw/paris_weather.csv
+
+# Env / secrets
+.env
+
+# IDE
+.idea/
+.vscode/
