@@ -41,13 +41,13 @@ def _parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--analysis-out",
-        default="out/analysis.csv",
-        help="Output path for the analysis CSV (default: out/analysis.csv).",
+        default=None,
+        help="Output path for the analysis CSV (default: out/analysis_YYYY-MM-DD.csv).",
     )
     parser.add_argument(
         "--report-out",
-        default="out/report.md",
-        help="Output path for the markdown report (default: out/report.md).",
+        default=None,
+        help="Output path for the markdown report (default: out/report_YYYY-MM-DD.md).",
     )
     return parser.parse_args()
 
@@ -67,11 +67,14 @@ def main() -> None:
     args = _parse_args()
     _validate_date(args.date)
 
+    analysis_path = args.analysis_out or f"out/analysis_{args.date}.csv"
+    report_path = args.report_out or f"out/report_{args.date}.md"
+
     exit_code = run(
         target_date=args.date,
         api_base_url=args.api_url,
-        analysis_path=args.analysis_out,
-        report_path=args.report_out,
+        analysis_path=analysis_path,
+        report_path=report_path,
     )
     sys.exit(exit_code)
 

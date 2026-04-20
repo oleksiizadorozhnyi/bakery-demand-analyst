@@ -9,7 +9,6 @@ from __future__ import annotations
 import csv
 from datetime import date, timedelta
 from pathlib import Path
-from typing import TYPE_CHECKING
 
 from bakery_analyst.config import settings
 from bakery_analyst.models.domain_models import AnalysisRow, ValidatedPrediction
@@ -17,9 +16,12 @@ from bakery_analyst.repository.analytics_repository import (
     compute_temp_sales_correlation,
     fetch_bias_metrics,
     fetch_recent_bias,
+    fetch_recency_metrics,
     fetch_stockout_metrics,
+    fetch_stockout_severity,
     fetch_variability_metrics,
     fetch_waste_metrics,
+    fetch_window_coverage,
 )
 
 # ---------------------------------------------------------------------------
@@ -31,13 +33,22 @@ HIGH_CV_THRESHOLD: float = 0.40
 OVERFORECAST_RATIO_THRESHOLD: float = 0.65
 
 
-def _r(value: float | None) -> float | None:
-    """Round a float to 3 decimal places, or return None."""
-    return round(value, 3) if value is not None else None
+def _r(value: float | None, decimals: int = 3) -> float | None:
+    """Round a float to *decimals* places, or return None."""
+    return round(value, decimals) if value is not None else None
+
+
+def _ri(value: int | None) -> int | None:
+    """Pass through an int or None unchanged."""
+    return value
 
 
 def _compute_windows(target_date: str) -> tuple[str, str, str]:
-    """Return (main_window_start, recent_window_start, window_end) for the given target date.
+    """Return (main_window_start, recent_window_start, window_end).
+
+    window_end       = target_date - 1 day  (last day of observed history)
+    main_window_start = window_end - main_window_days
+    recent_window_start = window_end - recent_window_days
 
     Args:
         target_date: ISO-format date string, e.g. ``"2026-01-15"``.
@@ -60,7 +71,7 @@ def _analyse_one(
     recent_window_start: str,
     window_end: str,
 ) -> AnalysisRow:
-    """Compute metrics and risk flags for a single prediction.
+    """Compute all metrics and risk flags for a single prediction.
 
     Args:
         prediction: A validated prediction object.
@@ -76,14 +87,17 @@ def _analyse_one(
     product_code = prediction.product_code
 
     # ------------------------------------------------------------------
-    # Fetch all metrics
+    # Fetch all metrics from the repository layer
     # ------------------------------------------------------------------
     bias = fetch_bias_metrics(shop_id, product_code, main_window_start, window_end)
     recent_bias = fetch_recent_bias(shop_id, product_code, recent_window_start, window_end)
     waste = fetch_waste_metrics(shop_id, product_code, main_window_start, window_end)
     stockout = fetch_stockout_metrics(shop_id, product_code, main_window_start, window_end)
+    stockout_sev = fetch_stockout_severity(shop_id, product_code, main_window_start, window_end)
     variability = fetch_variability_metrics(shop_id, product_code, main_window_start, window_end)
     temp_corr = compute_temp_sales_correlation(shop_id, product_code, main_window_start, window_end)
+    coverage = fetch_window_coverage(shop_id, product_code, main_window_start, window_end)
+    recency = fetch_recency_metrics(shop_id, product_code, window_end)
 
     # ------------------------------------------------------------------
     # Extract individual values (raw, before rounding)
@@ -93,15 +107,31 @@ def _analyse_one(
     overforecast_ratio: float | None = bias.get("overforecast_ratio")
     recent_mean_signed_error: float | None = recent_bias.get("recent_mean_signed_error")
     waste_rate: float | None = waste.get("waste_rate")
+    avg_daily_waste_units: float | None = waste.get("avg_daily_waste_units")
     stockout_rate: float | None = stockout.get("stockout_rate")
+    stockout_severity_proxy: float | None = stockout_sev.get("stockout_severity_proxy")
     stddev_units_sold: float | None = variability.get("stddev_units_sold")
     coefficient_of_variation: float | None = variability.get("coefficient_of_variation")
+    window_coverage_count: int | None = coverage.get("window_coverage_count")
+    days_since_last_stockout: int | None = recency.get("days_since_last_stockout")
+    days_since_last_waste: int | None = recency.get("days_since_last_waste")
 
     # ------------------------------------------------------------------
-    # Derived metric
+    # Bias-adjusted order suggestion
+    #
+    # Uses the 28-day bias as the primary correction because it is more
+    # statistically stable than the 14-day recent bias.  The 14-day bias
+    # is reported alongside so the LLM can flag cases where recent bias
+    # diverges strongly and a more aggressive correction may be appropriate.
+    #
+    # Formula: pred_point - mean_signed_error
+    #   If bias > 0 (over-forecast): suggested order < prediction.
+    #   If bias < 0 (under-forecast): suggested order > prediction.
     # ------------------------------------------------------------------
-    service_reliability: float | None = (
-        1.0 - stockout_rate if stockout_rate is not None else None
+    bias_adjusted_order: float | None = (
+        round(prediction.pred_point - mean_signed_error, 1)
+        if mean_signed_error is not None
+        else None
     )
 
     # ------------------------------------------------------------------
@@ -119,7 +149,9 @@ def _analyse_one(
     # Risk flags
     # ------------------------------------------------------------------
     high_waste_flag = waste_rate is not None and waste_rate > HIGH_WASTE_THRESHOLD
-    frequent_stockout_flag = stockout_rate is not None and stockout_rate > FREQUENT_STOCKOUT_THRESHOLD
+    frequent_stockout_flag = (
+        stockout_rate is not None and stockout_rate > FREQUENT_STOCKOUT_THRESHOLD
+    )
     high_variability_flag = (
         coefficient_of_variation is not None
         and coefficient_of_variation > HIGH_CV_THRESHOLD
@@ -134,16 +166,28 @@ def _analyse_one(
         shop_id=shop_id,
         product_code=product_code,
         prediction_quality=prediction.prediction_quality,
+        # Forecast error
         mean_signed_error=_r(mean_signed_error),
+        recent_mean_signed_error=_r(recent_mean_signed_error),
         overforecast_ratio=_r(overforecast_ratio),
         mae=_r(mae),
+        # Waste
         waste_rate=_r(waste_rate),
+        avg_daily_waste_units=_r(avg_daily_waste_units, decimals=1),
+        # Stockout
         stockout_rate=_r(stockout_rate),
-        service_reliability=_r(service_reliability),
+        stockout_severity_proxy=_r(stockout_severity_proxy, decimals=1),
+        # Variability (internal)
         stddev_units_sold=_r(stddev_units_sold),
         coefficient_of_variation=_r(coefficient_of_variation),
+        # Temperature
         temp_sales_correlation=_r(temp_corr),
-        recent_mean_signed_error=_r(recent_mean_signed_error),
+        # Actionability helpers
+        bias_adjusted_order=bias_adjusted_order,
+        window_coverage_count=_ri(window_coverage_count),
+        days_since_last_stockout=_ri(days_since_last_stockout),
+        days_since_last_waste=_ri(days_since_last_waste),
+        # Risk flags
         high_waste_flag=high_waste_flag,
         frequent_stockout_flag=frequent_stockout_flag,
         high_variability_flag=high_variability_flag,
@@ -157,11 +201,6 @@ def run_analysis(
     target_date: str,
 ) -> list[AnalysisRow]:
     """Compute all metrics for each prediction and return an AnalysisRow list.
-
-    For every :class:`ValidatedPrediction` the function fetches bias, waste,
-    stockout, variability, and temperature-correlation metrics from the
-    repository layer, derives ``service_reliability``, applies transparent
-    risk flags, and collects the results into :class:`AnalysisRow` objects.
 
     Args:
         predictions: Validated predictions to analyse.

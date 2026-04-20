@@ -166,7 +166,8 @@ stop-api:
 .PHONY: clean
 clean: stop-api
 	@echo "$(BOLD)→ Cleaning …$(RESET)"
-	rm -f bakery.db analysis.csv report.md .api.pid
+	rm -f bakery.db .api.pid
+	find out/ -type f ! -name '.gitkeep' -delete
 	rm -rf $(VENV) bakery_analyst.egg-info __pycache__ .pytest_cache
 	find . -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true
 	@echo "$(GREEN)✓ Clean$(RESET)"

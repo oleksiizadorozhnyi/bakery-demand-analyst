@@ -1,8 +1,8 @@
 # Bakery Demand Analyst
 
 A local analytics service that fetches bakery demand predictions from a mock REST API,
-computes business metrics from historical SQLite data, and generates a concise
-manager-facing report via the Claude API.
+computes business metrics from historical SQLite data, generates inline charts for
+flagged combinations, and produces a manager-facing report via the Claude API.
 
 ---
 
@@ -16,9 +16,11 @@ Mock API (FastAPI) ──► Prediction fetch & validation
                     SQL metric computation
                     (bias, waste, stockouts, variability)
                               │
-                    Claude API prompt _
-                              │        │
-                    analysis.csv  +  report.md
+                    Chart generation (base64 inline PNG)
+                              │
+                    Claude API prompt
+                              │
+                    out/analysis_YYYY-MM-DD.csv  +  out/report_YYYY-MM-DD.md
 ```
 
 Given a target date the pipeline:
@@ -27,8 +29,9 @@ Given a target date the pipeline:
 3. For each valid shop/product pair, queries 28-day (and 14-day) historical windows.
 4. Computes all metrics predominantly in SQL (one documented deviation for Pearson correlation).
 5. Applies transparent risk flags against fixed thresholds.
-6. Builds a compact structured prompt and calls Claude (or a mock).
-7. Saves `analysis.csv` and `report.md`.
+6. Generates inline base64 charts for flagged shop/product combinations.
+7. Builds a compact structured prompt and calls Claude (or a mock).
+8. Saves `out/analysis_YYYY-MM-DD.csv` and `out/report_YYYY-MM-DD.md`.
 
 ---
 
@@ -41,13 +44,15 @@ Given a target date the pipeline:
 ├── requirements.txt
 ├── pyproject.toml
 ├── .env.example
+├── out/                       ← generated outputs (gitignored except .gitkeep)
 ├── data/
 │   └── raw/
 │       ├── bakery_sales.csv   ← Kaggle download (semi-synthetic mode only)
 │       └── paris_weather.csv  ← auto-fetched and cached by weather_loader
 ├── scripts/
 │   ├── seed_db.py             ← populate the SQLite database
-│   └── run_api.py             ← start the FastAPI server
+│   ├── run_api.py             ← start the FastAPI server
+│   └── download_data.py       ← download French Bakery CSV via kagglehub
 ├── tests/
 │   ├── test_api.py
 │   ├── test_seed_sanity.py
@@ -75,9 +80,10 @@ Given a target date the pipeline:
     ├── analysis/
     │   └── service.py         ← metric orchestration, risk flags, CSV export
     ├── reporting/
+    │   ├── charts.py          ← base64 inline chart generation (matplotlib)
     │   ├── llm_client.py      ← Claude API (real) or mock
     │   ├── prompt_builder.py  ← compact structured prompt construction
-    │   └── writer.py          ← report.md writer
+    │   └── writer.py          ← report.md writer with embedded charts
     └── pipeline/
         └── runner.py          ← 10-step orchestrator
 ```
@@ -96,14 +102,16 @@ This runs the full bootstrap automatically:
 1. Creates `.venv` and installs all dependencies
 2. Seeds the database (synthetic mode by default)
 3. Starts the API server in the background
-4. Runs the analytics pipeline with mock LLM
-5. Prints paths to `analysis.csv` and `report.md`
+4. Runs the analytics pipeline (reads `USE_MOCK_LLM` from `.env`)
+5. Prints paths to `out/analysis_YYYY-MM-DD.csv` and `out/report_YYYY-MM-DD.md`
+6. Asks whether to stop the API server
 
 With real data and real Claude:
 
 ```bash
 # copy and edit .env first
 cp .env.example .env
+# set CLAUDE_API_KEY and USE_MOCK_LLM=false in .env
 
 make start MODE=semi_synthetic DATE=2022-06-15
 ```
@@ -184,7 +192,7 @@ python scripts/run_api.py
 #### 5. Run the analytics pipeline
 
 ```bash
-make run DATE=2022-06-15         # real Claude (CLAUDE_API_KEY must be set)
+make run DATE=2022-06-15         # real Claude (CLAUDE_API_KEY must be set in .env)
 make run-mock DATE=2022-06-15    # mock LLM, no key needed
 
 # or directly:
@@ -192,7 +200,13 @@ python main.py --date 2022-06-15
 USE_MOCK_LLM=true python main.py --date 2022-06-15
 
 # custom output paths (parent dirs created automatically):
-python main.py --date 2022-06-15 --analysis-out out/analysis.csv --report-out out/report.md
+python main.py --date 2022-06-15 --analysis-out custom/metrics.csv --report-out custom/report.md
+```
+
+Output files default to:
+```
+out/analysis_2022-06-15.csv
+out/report_2022-06-15.md
 ```
 
 #### 6. Run tests
@@ -218,7 +232,7 @@ make run-mock DATE=…    Run analytics pipeline (mock LLM)
 make test               Run all 38 tests
 make start              Full bootstrap in one command (see above)
 make stop-api           Kill background API process started by make start
-make clean              Remove DB, outputs (.csv/.md), venv
+make clean              Remove DB, out/ contents, and venv
 make clean-db           Remove bakery.db only
 ```
 
@@ -296,20 +310,53 @@ FAILURE_ENABLED=true ERROR_500_PROBABILITY=0.2 PARTIAL_RECORD_PROBABILITY=0.3 \
 
 ## Analytics metrics
 
-All computed from historical data over a configurable window (default 28 days).
+All metrics are computed from **observed data only** (forecast, sales, waste, and stockout
+events). No metric requires unobserved post-stockout demand.
 
-| Metric | Description |
-|---|---|
-| `mean_signed_error` | avg(pred_point − units_sold) — systematic bias |
-| `mae` | avg(\|pred_point − units_sold\|) — absolute error magnitude |
-| `overforecast_ratio` | share of days where pred > actual |
-| `waste_rate` | sum(waste_units) / sum(ordered_units) |
-| `stockout_rate` | fraction of days with a stockout |
-| `service_reliability` | 1 − stockout_rate |
-| `stddev_units_sold` | demand variability |
-| `coefficient_of_variation` | stddev / mean — normalised variability |
-| `temp_sales_correlation` | Pearson r between temperature and units_sold |
-| `recent_mean_signed_error` | bias over the most recent 14 days |
+### Forecast error — model quality
+
+| Metric | Source | Description |
+|---|---|---|
+| `mean_signed_error` | observed | avg(pred_point − units_sold) over 28 days. Positive = systematic over-forecast. |
+| `recent_mean_signed_error` | observed | Same formula over the most recent 14 days. Compare absolute magnitudes with `mean_signed_error` to detect whether bias is worsening, stable, or improving. |
+| `mae` | observed | avg(&#124;pred_point − units_sold&#124;) — error magnitude regardless of direction. |
+| `overforecast_ratio` | observed | Fraction of days where pred_point > units_sold. Shows directional consistency of bias. |
+
+### Waste — operational impact
+
+| Metric | Source | Description |
+|---|---|---|
+| `waste_rate` | observed | sum(waste_units) / sum(ordered_units). Relative waste burden. |
+| `avg_daily_waste_units` | observed | avg(waste_units) per day. **Absolute unit count** — easier to cost out than the rate alone. |
+
+### Stockout — operational risk
+
+| Metric | Source | Description |
+|---|---|---|
+| `stockout_rate` | observed | Fraction of days in the window with at least one stockout. |
+| `stockout_severity_proxy` | **PROXY** | avg(pred_point − ordered_units) on stockout days only. The forecast is used as a proxy for what true demand *may* have been. **Not observed lost demand** — always presented as an estimated gap. Returns `None` if no stockout days exist in the window. |
+
+### Actionability helpers
+
+| Metric | Source | Description |
+|---|---|---|
+| `bias_adjusted_order` | derived | pred_point − mean_signed_error (28-day bias). Suggested baseline order quantity correcting for observed systematic error. Present as a starting point, not a guarantee. |
+| `window_coverage_count` | observed | Number of calendar days in the 28-day window with usable sales data. Values below 20 reduce metric reliability and trigger more cautious report language. |
+| `days_since_last_stockout` | observed | Days since the most recent stockout event in the full historical record (not limited to the 28-day window). `None` if no stockout has ever been recorded. |
+| `days_since_last_waste` | observed | Days since the most recent day with waste_units > 0 in the full historical record. `None` if no waste has been recorded. |
+
+### Demand variability — internal use
+
+| Metric | Source | Description |
+|---|---|---|
+| `stddev_units_sold` | observed | Standard deviation of units_sold. Note: censored on stockout days (units_sold = ordered_units), so understates true demand variance when stockout_rate is high. |
+| `coefficient_of_variation` | derived | stddev / mean of units_sold. Used as the `high_variability_flag` trigger only; not foregrounded in the client narrative due to censoring and low interpretability. |
+
+### Temperature signal
+
+| Metric | Source | Description |
+|---|---|---|
+| `temp_sales_correlation` | observed | Pearson r between daily temperature and units_sold. Noisy at 28 days; only surfaced in the report when &#124;r&#124; > 0.35. Never presented as causal. |
 
 ### Risk flags
 
@@ -320,6 +367,14 @@ All computed from historical data over a configurable window (default 28 days).
 | `high_variability_flag` | CV > 40 % |
 | `persistent_overforecast_flag` | overforecast_ratio > 65 % |
 | `incomplete_prediction_flag` | prediction had missing quantiles |
+
+### Metric observability key
+
+| Label | Meaning |
+|---|---|
+| observed | Computed directly from recorded sales, waste, and forecast data |
+| derived | Computed from observed metrics (e.g. bias_adjusted_order = pred_point − bias) |
+| PROXY | An estimate based on observed data used as a stand-in for an unobservable quantity. Always labelled as such in the report. |
 
 ---
 
@@ -386,6 +441,21 @@ The same shop multipliers, ordering policy, and forecast noise are applied on to
 The 90-day window is selected automatically as the contiguous slice with the highest
 total volume where both products appear on at least 70 % of days.
 
+### Chart generation
+
+For each report run, `reporting/charts.py` generates up to three inline charts
+for the most severely flagged shop/product combination:
+
+- **Forecast vs Actual** — actual sales (solid), point forecast (dashed), Q50–Q90
+  prediction band (shaded), stockout markers (red triangles).
+- **Waste & Stockout Rates** — grouped bar chart across all combinations; flagged
+  bars have a black border; reference lines at the 20 % and 15 % thresholds.
+- **Temperature vs Sales scatter** — only generated when |r| > 0.35; includes a
+  plain-Python regression line and the r value annotation.
+
+All charts are base64-encoded and embedded directly in `report.md` as inline images —
+no separate image files are written to disk.
+
 ### SQL-first analytics
 
 All metric computation is in SQL except Pearson correlation, which requires `CORR()`
@@ -422,4 +492,3 @@ reseeding is the intended workflow for schema changes.
 - **Alembic migrations** — production-style schema evolution without data loss.
 - **Async repository layer** — replace synchronous SQLite with `aiosqlite` for higher concurrency.
 - **Configurable risk thresholds** — move hard-coded constants to `config.py` with env var overrides.
-- **Report versioning** — date-stamped output filenames so repeated runs don't overwrite.
