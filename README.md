@@ -492,3 +492,15 @@ reseeding is the intended workflow for schema changes.
 - **Alembic migrations** — production-style schema evolution without data loss.
 - **Async repository layer** — replace synchronous SQLite with `aiosqlite` for higher concurrency.
 - **Configurable risk thresholds** — move hard-coded constants to `config.py` with env var overrides.
+
+---
+
+## Additional improvements I would consider
+
+- **Delivery layer** — integrate the output into channels like email, Telegram, or dashboards so recommendations reach decision-makers directly.
+- **Explainability** — include model explanations (e.g. key drivers like weather, seasonality, weekdays) in the report to make predictions more transparent.
+- **Customizable metrics** — allow configuring which metrics are shown depending on business needs.
+- **Multi-store support** — extend the system to handle multiple bakery locations and capture correlations between them.
+- **Feature enrichment** — incorporate holidays, weekends, and other external signals to improve forecast accuracy and reporting.
+- **Human-in-the-loop** — allow users to provide feedback or adjust recommendations, and use that signal to improve future predictions.
+- **Audit and usage tracking** — track who views reports and modifies settings to support business workflows.
