@@ -162,13 +162,15 @@ def forecast_vs_actual(
     fig, ax = plt.subplots(figsize=(9, 4))
 
     # Shaded band Q50–Q90
-    band_dates, band_q50, band_q90 = zip(
-        *[
-            (all_dates[i], q50[i], q90[i])
-            for i in range(len(all_dates))
-            if q50[i] is not None and q90[i] is not None
-        ]
-    ) if any(v is not None for v in q50) else ([], [], [])
+    _valid_band = [
+        (all_dates[i], q50[i], q90[i])
+        for i in range(len(all_dates))
+        if q50[i] is not None and q90[i] is not None
+    ]
+    if _valid_band:
+        band_dates, band_q50, band_q90 = zip(*_valid_band)
+    else:
+        band_dates, band_q50, band_q90 = [], [], []
 
     if band_dates:
         ax.fill_between(

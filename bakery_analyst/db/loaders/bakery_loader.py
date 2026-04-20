@@ -7,6 +7,7 @@ daily baseline per product, and select the best 90-day contiguous window.
 from __future__ import annotations
 
 import csv
+import os
 import sys
 from collections import defaultdict
 from datetime import date, timedelta
@@ -77,8 +78,6 @@ def _aggregate_csv(path: str) -> dict[date, dict[str, int]]:
     ValueError
         If no matching rows are found, or a product is entirely absent.
     """
-    import os
-
     if not os.path.exists(path):
         raise FileNotFoundError(
             f"Bakery CSV not found at {path}. "

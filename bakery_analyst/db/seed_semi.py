@@ -17,6 +17,7 @@ driving the model differs.
 
 from __future__ import annotations
 
+import math
 from datetime import date
 from typing import Any
 
@@ -242,9 +243,8 @@ def seed_database(force: bool = False, db_path: str | None = None) -> None:
             w = weather_map.get(d)
             if w is None:
                 # Synthetic fallback for this date (already warned by loader)
-                import math as _math
                 doy = d.timetuple().tm_yday
-                temp_base = 16.0 + 8.0 * _math.sin(2 * _math.pi * (doy - 80) / 365)
+                temp_base = 16.0 + 8.0 * math.sin(2 * math.pi * (doy - 80) / 365)
                 w = WeatherRow(
                     date=d,
                     temp=float(temp_base + rng.normal(0.0, 2.5)),
@@ -254,7 +254,7 @@ def seed_database(force: bool = False, db_path: str | None = None) -> None:
 
             for shop in SHOPS:
                 for product in PRODUCTS:
-                    real_units = baseline[d][product]
+                    real_units = baseline.get(d, {}).get(product, 0)
                     sales_batch.append(
                         _build_sales_row(shop, product, d, real_units, w, rng)
                     )

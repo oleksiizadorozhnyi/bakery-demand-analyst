@@ -27,7 +27,7 @@ SHOPS: list[dict[str, Any]] = [
     {"shop_id": "shop_03", "city_center": 1, "seating_capacity": 20, "has_oven": 1},
 ]
 
-PRODUCTS: list[str] = ["croissant", "baguette"]
+PRODUCTS: list[str] = ["baguette", "croissant"]
 
 # French Bakery Daily Sales baseline (single-shop aggregate)
 PRODUCT_BASE: dict[str, float] = {

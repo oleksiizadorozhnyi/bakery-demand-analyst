@@ -171,7 +171,7 @@ def _fetch_from_api(start: date, end: date) -> dict[date, WeatherRow]:
 
     # Handle nulls
     temp_vals = _interpolate_nulls(times, raw_temp, default=15.0)
-    rain_vals = [0.0 if v is None else float(v) for v in raw_rain]
+    rain_vals = _interpolate_nulls(times, raw_rain, default=0.0)
     wind_vals = [10.0 if v is None else float(v) for v in raw_wind]
 
     rows: dict[date, WeatherRow] = {}
